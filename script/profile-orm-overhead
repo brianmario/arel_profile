@@ -1,0 +1,67 @@
+#!/usr/bin/env ruby
+# Usage: script/profile-orm-overhead
+require File.expand_path("../../config/environment", __FILE__)
+
+GC.disable
+
+warn "This program measures ORM overhead by profiling the time needed to
+perform the following with AR3 vs. it's equivalent with raw SQL.
+
+  user = User.find_by_login('tater')
+  starred = user.starred_items.count
+"
+
+unless User.find_by_login('tater')
+  u = User.new
+  u.login = 'tater'
+  u.save!
+end
+
+def tm(name, &block)
+  start = Time.now
+  yield
+ensure
+  duration = (Time.now - start).to_f
+  warn "%20s    %0.3fms" % [name, duration * 1000]
+end
+
+def active_record
+  user = User.find_by_login('tater')
+  starred = user.starred_items.count
+end
+
+def raw_sql
+  user_id = ActiveRecord::Base.connection.execute("SELECT id FROM users WHERE login = 'tater'").first.first
+  query = "SELECT DISTINCT COUNT(DISTINCT `items`.`id`) FROM `items` LEFT OUTER JOIN `users` ON `users`.`id` = `items`.`user_id` LEFT OUTER JOIN `user_emails` ON `user_emails`.`user_id` = `users`.`id` AND `user_emails`.`primary` = 1 INNER JOIN `starred_items` ON `items`.`id` = `starred_items`.`item_id` WHERE `items`.`delete_flag` = 0 AND `starred_items`.`user_id` = #{user_id}"
+  ActiveRecord::Base.connection.execute(query).first.first
+end
+
+# make sure the user exists
+if User.find_by_login('tater').nil?
+  User.create! :login => 'tater'
+end
+
+# warm it up
+active_record
+raw_sql
+
+warn "Sample of time taken for one iteration"
+
+5.times { tm('active_record') { active_record } }
+5.times { tm('raw_sql')  { raw_sql } }
+
+warn "\nProfiling over 10 iterations ..."
+
+require 'ruby-prof'
+RubyProf.start
+10.times { active_record }
+result = RubyProf.stop
+
+warn "Writing profile.html ..."
+printer = RubyProf::CallStackPrinter.new(result)
+File.open("#{Rails.root}/profile.html", 'wb') do |fd|
+  printer.print(fd)
+end
+system 'open profile.html 2>/dev/null'
+
+# vim: ft=ruby
